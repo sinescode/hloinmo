@@ -161,7 +161,7 @@ def clean_name(name):
     return name
 
 def generate_username_from_name(first_name, last_name):
-    # Clean the names first
+    # Clean the names first (assuming clean_name() is defined elsewhere)
     first_name = clean_name(first_name)
     last_name = clean_name(last_name)
     
@@ -169,21 +169,57 @@ def generate_username_from_name(first_name, last_name):
     if not first_name or not last_name:
         return generate_random_username()
     
-    # Generate username based on name (e.g., "jennie123" or "jnichols42")
-    base = random.choice([
+    # Generate possible base combinations
+    base_options = [
         first_name,
         last_name,
         f"{first_name[0]}{last_name}",
         f"{first_name}{last_name[0]}"
-    ])
+    ]
     
-    # Add some random digits (1-4 digits)
-    digits = ''.join(random.choice(string.digits) for _ in range(random.randint(1, 4)))
-    return f"{base}{digits}"
+    # Filter out options that are too long (after adding max 4 digits)
+    valid_bases = [base for base in base_options if 3 <= len(base) <= 13]
+    
+    # If no valid bases, use a random one and truncate if needed
+    if not valid_bases:
+        base = random.choice(base_options)
+        base = base[:13]  # truncate to leave room for at least 4 digits
+    else:
+        base = random.choice(valid_bases)
+    
+    # Calculate how many digits we can add (1-4, but must keep total length <=17)
+    max_digits = min(4, 17 - len(base))
+    min_digits = max(1, 7 - len(base))  # ensure we reach at least length 7
+    
+    # If min_digits > max_digits, we need to adjust the base length
+    if min_digits > max_digits:
+        if max_digits < 1:
+            # Base is too long, truncate it
+            base = base[:17 - 4]  # leave room for at least 1 digit
+            max_digits = min(4, 17 - len(base))
+            min_digits = max(1, 7 - len(base))
+        else:
+            # Adjust min_digits to fit within max_digits
+            min_digits = 1
+    
+    digits_length = random.randint(min_digits, max_digits)
+    digits = ''.join(random.choice(string.digits) for _ in range(digits_length))
+    
+    username = f"{base}{digits}"
+    
+    # Final length check (should always pass due to above logic)
+    if len(username) < 7:
+        # If still too short (unlikely), pad with more digits
+        username += ''.join(random.choice(string.digits) for _ in range(7 - len(username)))
+    elif len(username) > 17:
+        # If still too long (shouldn't happen), truncate
+        username = username[:17]
+    
+    return username
 
 def fetch_random_user():
     try:
-        response = requests.get('https://randomuser.me/api/?nat=us,gb,au,ca')  # Only English-speaking countries
+        response = requests.get('https://randomuser.me/api/')  # Only English-speaking countries
         if response.status_code == 200:
             data = response.json()
             user_data = data['results'][0]

@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, jsonify, send_file, g,send_from_directory
+from flask import Flask, render_template, request, redirect, url_for, jsonify, send_file, g, send_from_directory
 from io import BytesIO
 import random
 import string
@@ -8,7 +8,7 @@ import smtplib
 import dns.resolver
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import create_engine, Column, String, DateTime, Integer, Boolean, ForeignKey
-from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session ,relationship
+from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session, relationship
 import pandas as pd
 import concurrent.futures
 from sqlalchemy import desc
@@ -17,11 +17,13 @@ import re
 import secrets
 from werkzeug.security import generate_password_hash, check_password_hash
 import requests
-
+import os
+from flask_cors import CORS
 app = Flask(__name__)
+CORS(app)
 
 # Status codes for SMTP responses
-INVALID_MAILBOX_STATUS = [450, 550, 553]
+INVALID_MAILBOX_STATUS = [550]
 VALID_MAILBOX_STATUS = [250, 251]
 
 # Database setup
@@ -76,7 +78,7 @@ class AvailableAccount(Base):
     email = Column(String, unique=True)
     password = Column(String)
     check_date = Column(String)
-    user_id = Column(String(20), ForeignKey('users.id'))  # Changed to String
+    user_id = Column(String(20), ForeignKey('users.id'))
     user = relationship('User', backref='available_accounts')
 
 class GeneratedAccount(Base):
@@ -86,12 +88,8 @@ class GeneratedAccount(Base):
     email = Column(String, unique=True)
     password = Column(String)
     check_date = Column(DateTime, default=datetime.now)
-    user_id = Column(String(20), ForeignKey('users.id'))  # Changed to String
-    first_name = Column(String)
-    last_name = Column(String)
-    gender = Column(String)
+    user_id = Column(String(20), ForeignKey('users.id'))
     user = relationship('User', backref='generated_accounts')
-
 
 # Initialize database
 engine = create_engine('sqlite:///gmail_accounts.db')
@@ -105,7 +103,9 @@ def token_required(f):
         token = None
         
         if 'Authorization' in request.headers:
-            token = request.headers['Authorization'].split(" ")[1]
+            auth_header = request.headers['Authorization']
+            if ' ' in auth_header:
+                token = auth_header.split(" ")[1]
         
         if not token:
             return jsonify({'error': 'API token is missing'}), 401
@@ -148,105 +148,25 @@ def generate_random_password(length=12, include_uppercase=True, include_lowercas
         if all(req(password) for req in requirements):
             return password
 
-def is_english(s):
-    """Check if string contains only English letters"""
-    return bool(re.match('^[a-z]+$', s))
-
-def clean_name(name):
-    """Convert name to lowercase and remove non-English characters"""
-    # Convert to lowercase
-    name = name.lower()
-    # Remove any non-English letters
-    name = re.sub('[^a-z]', '', name)
-    return name
-
-def generate_username_from_name(first_name, last_name):
-    # Clean the names first (assuming clean_name() is defined elsewhere)
-    first_name = clean_name(first_name)
-    last_name = clean_name(last_name)
+def generate_random_username(min_length=6, max_length=15):
+    """Generate a random username with letters first followed by numbers."""
+    length = random.randint(min_length, max_length)
     
-    # Skip if names are empty after cleaning
-    if not first_name or not last_name:
-        return generate_random_username()
+    # Determine how many letters and numbers to use (at least 1 of each)
+    min_letters = max(1, length // 2)
+    num_letters = random.randint(min_letters, length - 1)
+    num_digits = length - num_letters
     
-    # Generate possible base combinations
-    base_options = [
-        first_name,
-        last_name,
-        f"{first_name[0]}{last_name}",
-        f"{first_name}{last_name[0]}"
-    ]
+    # Generate letters part
+    letters = ''.join(random.choice(string.ascii_lowercase) for _ in range(num_letters))
     
-    # Filter out options that are too long (after adding max 4 digits)
-    valid_bases = [base for base in base_options if 3 <= len(base) <= 13]
+    # Generate digits part
+    digits = ''.join(random.choice(string.digits) for _ in range(num_digits))
     
-    # If no valid bases, use a random one and truncate if needed
-    if not valid_bases:
-        base = random.choice(base_options)
-        base = base[:13]  # truncate to leave room for at least 4 digits
-    else:
-        base = random.choice(valid_bases)
-    
-    # Calculate how many digits we can add (1-4, but must keep total length <=17)
-    max_digits = min(4, 17 - len(base))
-    min_digits = max(1, 7 - len(base))  # ensure we reach at least length 7
-    
-    # If min_digits > max_digits, we need to adjust the base length
-    if min_digits > max_digits:
-        if max_digits < 1:
-            # Base is too long, truncate it
-            base = base[:17 - 4]  # leave room for at least 1 digit
-            max_digits = min(4, 17 - len(base))
-            min_digits = max(1, 7 - len(base))
-        else:
-            # Adjust min_digits to fit within max_digits
-            min_digits = 1
-    
-    digits_length = random.randint(min_digits, max_digits)
-    digits = ''.join(random.choice(string.digits) for _ in range(digits_length))
-    
-    username = f"{base}{digits}"
-    
-    # Final length check (should always pass due to above logic)
-    if len(username) < 7:
-        # If still too short (unlikely), pad with more digits
-        username += ''.join(random.choice(string.digits) for _ in range(7 - len(username)))
-    elif len(username) > 17:
-        # If still too long (shouldn't happen), truncate
-        username = username[:17]
+    # Combine letters first then digits
+    username = letters + digits
     
     return username
-
-def fetch_random_user():
-    try:
-        response = requests.get('https://randomuser.me/api/')  # Only English-speaking countries
-        if response.status_code == 200:
-            data = response.json()
-            user_data = data['results'][0]
-            
-            # Get and clean names
-            first_name = clean_name(user_data['name']['first'])
-            last_name = clean_name(user_data['name']['last'])
-            
-            # If names are empty after cleaning, try again
-            if not first_name or not last_name:
-                return fetch_random_user()
-                
-            return {
-                'first_name': first_name,
-                'last_name': last_name,
-                'gender': user_data['gender']
-            }
-    except Exception as e:
-        print(f"Error fetching random user: {e}")
-    return None
-
-def generate_random_username(min_length=7, max_length=17):
-    length = random.randint(min_length, max_length)
-    letters = ''.join(random.choice(string.ascii_lowercase) for _ in range(length-1))
-    digit = random.choice(string.digits)
-    return letters + digit
-
 
 def get_mx_for_domain(domain="gmail.com"):
     """Retrieve the MX record for Gmail with error handling."""
@@ -265,7 +185,7 @@ def check_email_availability(email, mx_host):
         with smtplib.SMTP(mx_host, port=25, timeout=3) as smtp:
             smtp.ehlo()
             # Use a valid sender address
-            smtp.mail('asadulhoqk@gmail.com')
+            smtp.mail('test@example.com')
             code, response = smtp.rcpt(email)
             
             if code in VALID_MAILBOX_STATUS:
@@ -295,20 +215,10 @@ def check_email_availability_with_retry(email, mx_host, max_retries=2, delay=2):
 def try_generate_account(mx_host, user):
     max_attempts = 5
     
-    # First fetch random user data
-    random_user = fetch_random_user()
-    if not random_user:
-        return None
-    
-    first_name = random_user['first_name']
-    last_name = random_user['last_name']
-    gender = random_user['gender']
-    
     for _ in range(max_attempts):
-        # Generate username based on name
-        username = generate_username_from_name(first_name, last_name)
+        username = generate_random_username()
         email = f"{username}@gmail.com"
-        
+    
         if (db_session.query(AvailableAccount).filter_by(email=email).first() or 
             db_session.query(GeneratedAccount).filter_by(email=email).first()):
             continue
@@ -319,34 +229,25 @@ def try_generate_account(mx_host, user):
             password = generate_random_password()
             current_date = datetime.now()
             
-            account = {
-                'username': username,
-                'email': email,
-                'password': password,
-                'check_date': current_date.strftime("%Y-%m-%d %H:%M:%S"),
-                'user_id': user.id,
-                'first_name': first_name,
-                'last_name': last_name,
-                'gender': gender
-            }
-            
             db_account = GeneratedAccount(
                 username=username,
                 email=email,
                 password=password,
                 check_date=current_date,
                 user_id=user.id,
-                first_name=first_name,
-                last_name=last_name,
-                gender=gender
             )
             db_session.add(db_account)
             db_session.commit()
             
-            return account
+            return {
+                'username': username,
+                'email': email,
+                'password': password,
+                'check_date': current_date.strftime("%Y-%m-%d %H:%M:%S"),
+                'user_id': user.id,
+            }
     
     return None
-
 
 @app.route('/generate_single', methods=['POST'])
 @token_required
@@ -368,6 +269,9 @@ def generate_single():
 def save_account():
     try:
         account_data = request.get_json()
+        if not account_data:
+            return jsonify({'error': 'No data provided'}), 400
+            
         account_data['user_id'] = g.current_user.id
         
         # Check if this is a generated account
@@ -378,6 +282,15 @@ def save_account():
         
         if generated:
             db_session.delete(generated)
+        
+        # Check if account already exists in available accounts
+        existing = db_session.query(AvailableAccount).filter_by(
+            email=account_data['email'],
+            user_id=g.current_user.id
+        ).first()
+        
+        if existing:
+            return jsonify({'error': 'Account already saved'}), 400
         
         db_account = AvailableAccount(
             username=account_data['username'],
@@ -492,9 +405,6 @@ def get_generated_accounts():
             'id': account.id,
             'username': account.username,
             'email': account.email,
-            'gender': account.gender,
-            'first_name':account.first_name,
-            'last_name':account.last_name,
             'password': account.password,
             'check_date': account.check_date.strftime("%Y-%m-%d %H:%M:%S")
         } for account in accounts]
@@ -507,6 +417,9 @@ def get_generated_accounts():
 def cancel_generated():
     try:
         data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+            
         emails_to_delete = data.get('emails', [])
         deleted_count = 0
         
@@ -531,6 +444,9 @@ def cancel_generated():
 @app.route('/validate-token', methods=['POST'])
 def validate_token():
     data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+        
     api_token = data.get('api_token')
     
     if not api_token:
@@ -550,6 +466,9 @@ def validate_token():
 @app.route('/account_register', methods=['POST'])
 def register():
     data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+        
     username = data.get('username')
     password = data.get('password')
     
@@ -559,25 +478,35 @@ def register():
     if db_session.query(User).filter_by(username=username).first():
         return jsonify({'error': 'Username already exists'}), 400
     
-    user = User(username=username)
-    user.set_password(password)
-    user.generate_api_token()
-    
-    db_session.add(user)
-    db_session.commit()
-    
-    return jsonify({
-        'message': 'User created successfully',
-        'api_token': user.api_token,
-        'user_id': user.id,
-        'username': user.username
-    }), 201
+    try:
+        user = User(username=username)
+        user.set_password(password)
+        user.generate_api_token()
+        
+        db_session.add(user)
+        db_session.commit()
+        
+        return jsonify({
+            'message': 'User created successfully',
+            'api_token': user.api_token,
+            'user_id': user.id,
+            'username': user.username
+        }), 201
+    except Exception as e:
+        db_session.rollback()
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/account_login', methods=['POST'])
 def login():
     data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+        
     username = data.get('username')
     password = data.get('password')
+    
+    if not username or not password:
+        return jsonify({'error': 'Username and password are required'}), 400
     
     user = db_session.query(User).filter_by(username=username).first()
     
